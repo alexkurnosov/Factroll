@@ -182,13 +182,15 @@ itself call an LLM in v1.
 ## Fact source strategy
 
 - **v1**: pre-curated corpus seeded from Aleksei's existing CCA prep
-  sessions. Stored in Postgres with category + topic tags and a
-  `reviewed` flag. Server returns matching facts.
+  sessions. Exported from past Claude conversation logs via an extraction
+  pipeline (parser → LLM structuring step → review CLI), loaded with
+  `reviewed = false`, promoted to live after admin approval.
 - **v1.5**: when the corpus is sparse for a topic, the tool returns a
   *generation instruction* to the agent ("Generate one [B]-category fact
   about $topic at EL $el, in this format: …"). The agent generates with
-  its own credits; the response goes into a review queue; once approved,
-  the fact is added to the corpus.
+  its own credits; the response is stored immediately (see "User-generated
+  content" below); if the user has opted in to contributing, the fact
+  enters the review queue; once approved it joins the shared corpus.
 - **Backlog**: server-side fact generation using our own LLM key for
   bulk seeding. Out of scope for v1 because of cost and ToS surface.
 
@@ -196,15 +198,41 @@ This sidesteps the "agent is the LLM" tension cleanly: mechanics stay
 deterministic on the server, creative generation falls back to the
 user's agent.
 
+### User-generated content
+
+All facts and quiz questions generated during a session are **stored
+unconditionally** for service operation, analytics, and corpus seeding.
+They are **never surfaced to other users** unless the generating user has
+opted in via the `contribute_to_corpus` profile flag.
+
+- `contribute_to_corpus = false` (default): content is stored, used only
+  for that user's own sessions and internal analytics.
+- `contribute_to_corpus = true`: content enters the review queue
+  (`reviewed = false`); admin approval is required before it joins the
+  shared corpus.
+
+Attribution: `contributed_by_user_id` is stored internally (for
+accountability and de-duplication) but is never exposed to other users.
+Contribution counts may be shown on the contributor's own profile.
+
+Corpus entries are labeled `source = 'community'` or `source =
+'official'` so provenance is always clear.
+
+Privacy posture: the Privacy Policy must disclose that generated content
+is stored. Users may request deletion of their generated content (GDPR
+right to erasure); deletion removes the content from the shared corpus
+and from their own session history.
+
 ## Persistence
 
 - **Postgres** as the system of record.
 - Initial tables:
   - `users` — id, email, oauth_subject, created_at
-  - `profiles` — user_id, topic, el, last_seen, …
+  - `profiles` — user_id, topic, el, last_seen, contribute_to_corpus (bool, default false), …
   - `topics` — id, name, default_el, public/private
   - `facts` — id, topic_id, category (A/B/C/D), content, why_it_matters,
-    reviewed, accuracy_score, source
+    reviewed, accuracy_score, source ('official'|'community'),
+    contributed_by_user_id (nullable)
   - `sessions` — id, user_id, surface_id, topic_id, started_at,
     ended_at, status
   - `fact_events` — session_id, fact_id, shown_at, was_repeat
@@ -320,31 +348,43 @@ its own backend; it calls `factroll/core/` in-process.
 ## Open questions
 
 1. **Stack**: Python or TypeScript MCP SDK?
-2. **Hosting**: Fly.io / Render / Cloud Run / VPS?
+2. ~~**Hosting**: Fly.io / Render / Cloud Run / VPS?~~ **Resolved: VPS.**
 3. **OAuth provider**: Auth0, Clerk, Supabase, or self-hosted (Hydra,
    Keycloak)?
 4. **DB migration tool**: Alembic, Prisma, Sqitch, plain SQL?
-5. **Fact corpus seeding source**: export from past Claude
-   conversations, manual curation, or both? Tooling needed?
-6. **Quiz state on disconnect**: if the user disconnects mid-quiz, do
+5. ~~**Fact corpus seeding source**: export from past Claude
+   conversations, manual curation, or both? Tooling needed?~~
+   **Resolved: past Claude conversations. Tooling = parser →
+   LLM structuring step → review CLI. See "Fact source strategy".**
+6. ~~**Quiz state on disconnect**: if the user disconnects mid-quiz, do
    we time out the locked answer (and how long), or honor it
-   indefinitely until they reconnect?
+   indefinitely until they reconnect?~~ **Resolved: hold indefinitely;
+   no timeout.**
 7. **Per-surface vs unified session**: confirm `(user_id, surface_id)`
    scoping vs a single active session per user.
-8. **"Switch topic" mid-quiz**: hard-block, soft-confirm via tool
-   output, or quietly close the quiz?
+8. ~~**"Switch topic" mid-quiz**: hard-block, soft-confirm via tool
+   output, or quietly close the quiz?~~ **Resolved: quietly close the
+   quiz, then switch.**
 9. **Free-text Q&A handling**: tool returns an instruction to the
    agent to answer using its own ability (v1 plan), or proxy through a
    server-side LLM for grounded QA (backlog)? When do we move?
-10. **Anonymous trial**: any pre-OAuth demo (e.g. a single read-only
+10. ~~**Anonymous trial**: any pre-OAuth demo (e.g. a single read-only
     topic) to lower onboarding friction, or is OAuth gate from day one
-    fine?
+    fine?~~ **Resolved: anonymous trial allowed; OAuth/registration
+    required to save state (EL, history, profile).**
 11. **Rate limits**: starting per-user request cap?
-12. **Telemetry**: what to log, with what retention, under what
-    privacy posture? GDPR-conscious defaults from day one.
-13. **Action surface**: is the v1 action enum above the right shape,
+12. ~~**Telemetry**: what to log, with what retention, under what
+    privacy posture? GDPR-conscious defaults from day one.~~
+    **Resolved: log topics picked, facts per topic, questions per
+    topic, quiz pass/fail rate per fact, EL progression, category
+    distribution, session drop-off action, anonymous→registered
+    conversion rate, free-text questions asked. All user-generated
+    content stored unconditionally; shared corpus gated on
+    `contribute_to_corpus` opt-in. See "User-generated content".**
+13. ~~**Action surface**: is the v1 action enum above the right shape,
     or should we split / merge any actions (e.g. is
-    `set_experience_level` distinct from a `start` param)?
+    `set_experience_level` distinct from a `start` param)?~~
+    **Resolved: leave as-is for v1; revisit later.**
 14. **EL adjustment ergonomics**: keep `set_experience_level` as a
     direct action, or only expose it via the `/factroll-status` prompt
     and explicit user request?

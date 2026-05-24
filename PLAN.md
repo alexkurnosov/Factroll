@@ -388,3 +388,604 @@ its own backend; it calls `factroll/core/` in-process.
 14. **EL adjustment ergonomics**: keep `set_experience_level` as a
     direct action, or only expose it via the `/factroll-status` prompt
     and explicit user request?
+
+---
+
+## Options Analysis
+
+Detailed comparison for open questions that imply a choice among named
+alternatives. Questions 2, 5, 6, 8, 10, 12, 13 are already resolved
+above. Question 11 asks for a number, not a discrete option.
+
+---
+
+### Q1 — Stack: Python or TypeScript MCP SDK?
+
+#### Option A — Python
+
+Python MCP SDK (`mcp` package), FastAPI or Starlette as the HTTP layer,
+SQLAlchemy as the ORM, Alembic for migrations, Pydantic for schemas.
+
+**Pros**
+- The seed pipeline (parser → LLM structuring step → review CLI) will
+  naturally be Python; same language keeps the whole repo unified.
+- SQLAlchemy + Alembic is the most battle-tested Postgres ORM/migration
+  stack, and the strongest answer to Q4.
+- Pydantic schemas map cleanly to the `schemas/<action>.py` shared-
+  schema goal; validation is first-class.
+- FastAPI handles SSE natively and is async-ready for the web BFF.
+- Anthropic's Python SDK is the reference implementation; prompt
+  caching, streaming, and tool use are first-class.
+- Data tooling (corpus analysis, EL statistics, future analytics) is
+  stronger in Python.
+
+**Cons**
+- If the web BFF ends up in TypeScript, schemas cannot be shared across
+  surfaces — two separate definitions must stay in sync.
+- Python's gradual typing means type errors surface at runtime more
+  often than TypeScript's compile-time checks.
+- Slightly more asyncio boilerplate compared to Node's native event loop
+  for SSE-heavy workloads.
+
+**Matches better when**
+- The seed pipeline and any analytics tooling live in the same repo.
+- Alembic is the chosen migration tool (Q4).
+- The web BFF is also Python (FastAPI).
+- Team is more fluent in Python than TypeScript.
+
+**Matches worse when**
+- The web BFF is Next.js/Remix — schema sharing across surfaces becomes
+  a manual sync problem.
+- Compile-time type safety across all layers is a hard requirement.
+
+#### Option B — TypeScript
+
+Official TypeScript MCP SDK (`@modelcontextprotocol/sdk`), Hono or
+Express as the HTTP layer, Drizzle ORM or Prisma for Postgres, Zod for
+schemas.
+
+**Pros**
+- If the web BFF is also TypeScript, the `schemas/<action>.ts` package
+  is shared verbatim between the MCP adapter and the BFF agent loop —
+  enforced at compile time, no drift possible.
+- Zod schemas generate JSON Schema for tool definitions with minimal
+  boilerplate.
+- Node.js is native to SSE/WebSocket; no GIL, idiomatic async.
+- MCP's broader tooling ecosystem (debugging, inspector tools) skews
+  TypeScript-first.
+- Prisma and Drizzle have strong DX and type inference.
+
+**Cons**
+- The seed pipeline will likely still be Python regardless, so the
+  "single language" argument is weakened — two languages in the repo
+  without the schema-sharing benefit.
+- Prisma and Drizzle are newer with smaller communities than SQLAlchemy;
+  migration edge cases (complex constraints, column renames) are less
+  well-documented.
+- Build tooling (tsconfig, bundlers) adds friction vs `python -m`-style
+  execution.
+- TypeScript is not the reference implementation; edge cases in the MCP
+  SDK hit Python first.
+
+**Matches better when**
+- The web BFF is Next.js or Remix — schema sharing pays off immediately.
+- Team is stronger in TypeScript than Python.
+- Compile-time proof of no adapter drift is a hard requirement.
+
+**Matches worse when**
+- The seed pipeline ends up in Python anyway (likely) — two languages,
+  no sharing benefit.
+- DB admin, corpus analysis, or analytics work benefits from Python's
+  data ecosystem.
+
+**Recommendation: Python.** The seed pipeline is the deciding factor.
+It will be Python regardless, and keeping the MCP server in the same
+language unifies the repo, the CI pipeline, and the mental model. The
+schema-sharing benefit of TypeScript is real but conditional on a
+TypeScript BFF; that surface does not exist yet. Revisit if the web BFF
+lands on Next.js.
+
+---
+
+### Q3 — OAuth provider: Auth0, Clerk, Supabase, or self-hosted?
+
+#### Option A — Auth0
+
+Hosted OAuth 2.1 authorization server. Industry standard, supports
+PKCE, machine-to-machine (M2M) tokens, and all standard grant types.
+
+**Pros**
+- Best-in-class OAuth 2.1 + PKCE compliance; tested with MCP's
+  third-party client flow (the pattern where Claude Desktop holds the
+  token, not a browser session).
+- Extensive SDKs for Python and TypeScript; well-documented PKCE
+  integration guide.
+- M2M tokens available for future server-to-server automation.
+- GDPR tooling, audit logs, and MFA are built in.
+- Fastest path to Milestone 0.
+
+**Cons**
+- Most expensive option at scale; pricing grows with monthly active
+  users.
+- Can be overkill for v1 scale; dashboard complexity is high for a
+  simple scope set (`factroll.read`, `factroll.write`).
+- Vendor lock-in: tenant config is not portable.
+
+**Matches better when**
+- MCP is the primary surface (Auth0's third-party OAuth flow is exactly
+  what MCP remote transport requires).
+- Speed to Milestone 0 is the priority.
+- Enterprise or compliance requirements appear later.
+
+**Matches worse when**
+- Budget is tight long-term and MAU grows; Auth0 can become expensive
+  quickly.
+- Self-sovereignty of auth data is a requirement.
+
+#### Option B — Clerk
+
+Modern auth platform focused on developer experience. Drop-in UI
+components, generous free tier, strong web-session story.
+
+**Pros**
+- Best DX of all hosted options; fastest to wire up for a web app.
+- Generous free tier (10 000 MAU).
+- Built-in user management dashboard, impersonation, and session
+  management.
+
+**Cons**
+- Designed for first-party web sessions (user signs into your app), not
+  third-party OAuth 2.1 flows. MCP requires an authorization server that
+  issues tokens to external clients (Claude Desktop, Claude Code) — this
+  is not Clerk's primary model.
+- OAuth 2.1 PKCE for third-party clients is less mature and less
+  documented in Clerk than Auth0.
+
+**Matches better when**
+- The web app is the primary surface and the auth flow is always
+  browser-initiated.
+- DX and onboarding speed for the web surface are the top priorities.
+
+**Matches worse when**
+- MCP is the primary surface — the third-party OAuth 2.1 dance is not
+  where Clerk shines.
+
+#### Option C — Supabase Auth
+
+Auth bundled with Supabase's Postgres-as-a-service. Open-source,
+self-hostable, free tier included.
+
+**Pros**
+- If Supabase is used for the Postgres instance, auth is bundled — one
+  fewer service to configure.
+- Open-source; self-hostable if needed later.
+- Free tier is generous; no per-MAU pricing at small scale.
+
+**Cons**
+- Supabase Auth is designed for first-party auth (user signs into your
+  app), not for acting as an OAuth 2.1 authorization server issuing
+  tokens to external MCP clients. This use case is not natively
+  supported.
+- We are running on a VPS (Q2 resolved), not Supabase managed Postgres,
+  so the "one service" bundling benefit disappears.
+- Less battle-tested for the specific MCP OAuth 2.1 PKCE flow.
+
+**Matches better when**
+- The Postgres instance is on Supabase (which it isn't here).
+- Auth needs are limited to first-party web sessions.
+
+**Matches worse when**
+- MCP's third-party OAuth 2.1 flow is the primary auth surface — this
+  pattern is not Supabase Auth's design target.
+
+#### Option D — Self-hosted (Ory Hydra or Keycloak)
+
+Run an OAuth 2.1 authorization server on the same VPS.
+
+- **Hydra** (Ory): lightweight, headless OAuth 2.1/OIDC server; no
+  built-in login UI (must wire your own); excellent spec compliance.
+- **Keycloak**: heavyweight, full-featured identity platform; built-in
+  UI; complex to configure.
+
+**Pros**
+- Full control; no per-user pricing; data never leaves the VPS (GDPR
+  data locality is simple).
+- Hydra has exemplary OAuth 2.1 + PKCE compliance; arguably the
+  strongest third-party token issuer for MCP.
+- Zero vendor lock-in; can migrate config to another deployment.
+- Long-term cost is the cheapest option (VPS already paid for).
+
+**Cons**
+- Significant ops burden: uptime, security patches, backup, key
+  rotation are all on us.
+- Hydra requires building a login/consent UI from scratch (not a drop-
+  in).
+- Keycloak is operationally complex; overkill for v1 scope set.
+- Adds meaningful time to Milestone 0 before the first smoke run.
+
+**Matches better when**
+- Budget sensitivity matters long-term and MAU could grow large.
+- GDPR data locality is a strict requirement.
+- The team has ops capacity and wants zero vendor dependency.
+
+**Matches worse when**
+- Speed to Milestone 0 is the priority.
+- Team is small and ops capacity is limited.
+
+**Recommendation: Auth0 for v1.** It is the fastest path to a correct
+OAuth 2.1 + PKCE setup for MCP's third-party token flow, which is the
+pattern that neither Clerk nor Supabase Auth targets well. Document a
+migration path to self-hosted Hydra in the backlog for when MAU growth
+makes Auth0's pricing a concern. Clerk is fine if the web app launches
+first but should not be the auth layer for the MCP server.
+
+---
+
+### Q4 — DB migration tool: Alembic, Prisma, Sqitch, or plain SQL?
+
+#### Option A — Alembic
+
+SQLAlchemy's migration companion. Generates versioned Python migration
+scripts; can autogenerate diffs from model changes.
+
+**Pros**
+- Directly integrated with SQLAlchemy models; autogenerate saves time on
+  routine column additions.
+- Battle-tested; largest community of the options listed.
+- Python-native — zero friction if the stack is Python (Q1 → Python).
+- Migration scripts are plain Python; arbitrary logic (data migrations,
+  conditional DDL) is easy to express.
+- Excellent documentation and VPS deployment story.
+
+**Cons**
+- Python-only; if the stack shifts to TypeScript, Alembic is no longer
+  available.
+- Migration files are Python code rather than raw SQL, which some DBAs
+  find less auditable.
+- Autogenerate misses some complex cases (e.g. functional indexes,
+  partial indexes) — always review before applying.
+
+**Matches better when**
+- Python is the chosen stack (Q1 → Python).
+- SQLAlchemy is the ORM.
+- Frequent schema iteration is expected during v1 development.
+
+**Matches worse when**
+- TypeScript is the stack.
+- Pure-SQL auditing is a hard requirement.
+
+#### Option B — Prisma
+
+TypeScript-native schema-first ORM + migration tool. Schema defined in
+Prisma Schema Language (PSL); migrations are generated SQL files.
+
+**Pros**
+- Best DX if the stack is TypeScript; type-safe queries included in the
+  same package.
+- Generated migrations are SQL files (auditable), not ORM code.
+- Prisma Studio provides a GUI DB inspector.
+- Active ecosystem and excellent getting-started documentation.
+
+**Cons**
+- TypeScript-only; not usable with a Python server.
+- PSL is another schema language to learn; it doesn't map one-to-one
+  to Postgres DDL.
+- Production migrations involving column renames, complex constraints, or
+  large table rewrites require manual intervention that Prisma's tooling
+  sometimes obscures.
+- Prisma ORM query performance has known overhead vs raw SQL on
+  complex joins.
+
+**Matches better when**
+- TypeScript is the stack (Q1 → TypeScript).
+- ORM and migration tool should be a single coherent package.
+
+**Matches worse when**
+- Python is the stack — Prisma is simply not applicable.
+- Fine-grained migration control is needed on a live production table.
+
+#### Option C — Sqitch
+
+Language-agnostic, change-based migration tool. Migrations are pure SQL
+files with dependency declarations; Sqitch tracks what has been applied.
+
+**Pros**
+- Pure SQL migrations: maximum auditability; a DBA can read and approve
+  every change without knowing the ORM.
+- Entirely language-agnostic — works equally well with Python or
+  TypeScript stacks.
+- Dependency-aware: migrations declare what they depend on; Sqitch
+  reorders as needed.
+- Stable and low-dependency; no framework to keep updated.
+
+**Cons**
+- No autogenerate: every migration is written by hand.
+- Smaller community; less beginner documentation.
+- No ORM integration; the schema in Sqitch files and the ORM models must
+  be kept in sync manually.
+- Higher initial time investment to set up correctly.
+
+**Matches better when**
+- The team includes a DBA or treats schema changes as high-stakes
+  operations requiring SQL-level review.
+- The stack could change language; you want migration tooling that is
+  independent of that choice.
+- Auditability and traceability of schema history are first-class
+  requirements.
+
+**Matches worse when**
+- Fast schema iteration during v1 is a priority; writing every migration
+  by hand slows the loop.
+- The team is small and wants the migration tool to do the heavy lifting.
+
+#### Option D — Plain SQL
+
+Numbered or timestamped raw SQL files executed by a thin runner (a
+simple shell script, a Makefile target, or a minimal library like
+`golang-migrate` used purely as a runner).
+
+**Pros**
+- Zero framework dependency; completely transparent.
+- Trivially auditable.
+- Works with any language stack and any deployment environment.
+
+**Cons**
+- No autogenerate; every DDL statement written by hand.
+- Manual version tracking is error-prone without a runner that records
+  which migrations have been applied.
+- Does not scale well as the schema grows and migration ordering becomes
+  complex.
+
+**Matches better when**
+- The schema is very small and unlikely to change often.
+- Zero external dependencies is a hard constraint.
+
+**Matches worse when**
+- Schema will evolve frequently across milestones (it will).
+- A reliable record of applied migrations is needed in production.
+
+**Recommendation: Alembic** (conditional on Q1 → Python, which is the
+recommendation there). It is the most integrated, best-documented option
+for the Python/SQLAlchemy stack and handles the schema evolution
+expected across Milestones 0–5. If Q1 resolves to TypeScript, use
+Prisma. Sqitch is a sound choice if SQL-level auditability becomes a
+requirement later — it can replace Alembic without touching the ORM.
+
+---
+
+### Q7 — Per-surface vs unified session scoping
+
+#### Option A — Per-surface: `(user_id, surface_id)` (current plan)
+
+Each MCP connection identity (`surface_id`) gets its own active session.
+Two connections from the same user run independent, non-colliding
+sessions.
+
+**Pros**
+- Models the actual use case: the plan explicitly mentions Aleksei using
+  both Claude Desktop and Claude Code simultaneously on different topics.
+- Quiz lock is surface-scoped by construction — no cross-surface
+  contention possible without any extra locking logic.
+- Matches how MCP connections work natively (each connection has a
+  distinct handshake and lifecycle).
+- Profile and EL are still shared across surfaces, so progress is not
+  siloed.
+
+**Cons**
+- More complex session-management queries (must filter by surface_id).
+- User could accidentally start two sessions and not realize it; "resume"
+  UX must make clear which surface the session is on.
+- Session summary and history views must aggregate across surfaces to
+  give a unified picture.
+
+**Matches better when**
+- Power users with multiple agents is a real early-adopter scenario (it
+  is, per the plan).
+- Quiz state must be isolated and collision-free without distributed
+  locking.
+- Sessions are meant to reflect distinct interaction contexts.
+
+**Matches worse when**
+- v1 simplicity is the top priority and parallel multi-client use is
+  not yet observed in practice.
+- The UX team wants a single "current session" concept across all
+  surfaces.
+
+#### Option B — Unified: single active session per user
+
+Only one active session per user at any time. Starting a session on a
+second client either takes over or is blocked until the first is ended.
+
+**Pros**
+- Simpler DB queries; no surface_id dimension.
+- Single "resume" UX — no ambiguity about which session to resume.
+- Easier to build unified session history.
+
+**Cons**
+- Blocks the explicitly mentioned real use case of two clients running
+  simultaneously.
+- Last-writer-wins on `start` from a second client would silently end
+  the first client's session, which is surprising behavior.
+- Blocking the second client requires the user to explicitly end the
+  first session — friction on a power-user workflow.
+
+**Matches better when**
+- v1 user base is expected to have exactly one active MCP client at a
+  time.
+- Simplicity of session management outweighs the parallel-client use
+  case.
+
+**Matches worse when**
+- The first user (and likely early adopters) uses both Claude Desktop
+  and Claude Code — this is the stated scenario.
+
+**Recommendation: Per-surface (Option A).** The use case is explicit in
+the plan; Option B would require the first user to work around the
+limitation immediately. The session table already has `surface_id` in
+the schema, so the complexity cost is already paid.
+
+---
+
+### Q9 — Free-text Q&A handling
+
+#### Option A — Agent instruction (v1 plan)
+
+When the user asks a free-text question, the tool returns a structured
+instruction telling the agent to answer using its own LLM abilities.
+The server stores the question for analytics and future corpus
+enrichment but does not call an LLM itself.
+
+```jsonc
+{
+  "say": "(answer the user's question using the current fact and recent context, then offer 'next_fact' or 'switch_topic')",
+  "next_actions": ["next_fact", "switch_topic"]
+}
+```
+
+**Pros**
+- No server-side LLM cost or API key management.
+- No ToS exposure from relaying user content through our own model.
+- The agent already has the full session context; its answer can be
+  naturally grounded in the conversation history.
+- Questions are stored for future corpus enrichment without needing a
+  live generation step.
+- Fastest to implement; unblocks Milestone 2 without additional
+  infrastructure.
+
+**Cons**
+- Answer quality varies by agent and by how well the instruction
+  prompt is written; Factroll has no control over what the agent says.
+- If the agent hallucinates, the user may associate the bad answer with
+  the Factroll session rather than the underlying LLM.
+- Instruction fidelity depends on the agent following the returned
+  `say` string — not all clients will handle it identically.
+
+**Matches better when**
+- v1 speed and cost are the priorities.
+- Users are using capable agents (Claude Desktop, Claude Code) that
+  follow tool instructions reliably.
+- Q&A is a secondary feature, not a product differentiator.
+
+**Matches worse when**
+- Answer accuracy is a brand concern.
+- Users are on weaker agents that ignore or misinterpret the instruction.
+- Q&A becomes a primary feature with quality expectations.
+
+#### Option B — Server-side LLM proxy (backlog)
+
+Factroll forwards the user's question and the current fact/session
+context to a server-controlled LLM call, returning a grounded answer
+directly in the tool response.
+
+**Pros**
+- Consistent answer quality regardless of which agent the user is
+  running.
+- Factroll controls the prompt; answers can be grounded against the
+  stored fact corpus.
+- Enables richer features: citation of source facts, accuracy scoring
+  of user understanding, structured Q&A history.
+
+**Cons**
+- Adds LLM API cost on Factroll's side; requires an API key and cost
+  controls.
+- Adds latency (an extra LLM call per question).
+- ToS surface: we are now relaying user content through our own model.
+- Significantly more complexity; needs a provider abstraction, error
+  handling, and rate limiting on LLM calls.
+
+**Matches better when**
+- Q&A answer quality is a product differentiator (paid tier or premium
+  feature).
+- The fact corpus is dense enough to ground answers reliably.
+- Budget for LLM API costs is available.
+
+**Matches worse when**
+- v1; no budget for server-side LLM calls.
+- Moving fast is more important than answer consistency.
+
+**Recommendation: Agent instruction (Option A) for v1**, as already
+planned. Move to Option B when either: (a) Q&A answer quality becomes
+a recurring user complaint, or (b) a paid tier is introduced whose
+margin covers the per-question LLM cost. The switch does not require a
+schema change — only the server-side handler for `ask_question` changes.
+
+---
+
+### Q14 — EL adjustment ergonomics
+
+#### Option A — `set_experience_level` as a direct action
+
+The action is part of the active session vocabulary and included in
+`next_actions` when contextually appropriate, allowing the agent to
+suggest or invoke it mid-session without the user breaking flow.
+
+**Pros**
+- Discoverable: the agent can proactively suggest EL adjustment when
+  the user signals that facts feel too easy or too hard.
+- No flow interruption: the user does not need to exit the session and
+  invoke `/factroll-status` separately.
+- Consistent with the rest of the action model — all session-modifying
+  operations are available as actions.
+
+**Cons**
+- Adds a term to the `next_actions` vocabulary in every session turn
+  where it is relevant; slight token cost.
+- The agent must decide when to surface the suggestion; a poorly tuned
+  agent might suggest EL changes too often or not at all.
+- Risk of accidental EL changes if the agent misinterprets an offhand
+  user comment ("this is too easy") as an intent to change EL.
+
+**Matches better when**
+- EL calibration is expected to happen frequently as users explore new
+  topics and discover their actual level.
+- The agent is capable of contextual judgment about when to surface the
+  action.
+- Smooth in-session UX is a priority.
+
+**Matches worse when**
+- EL is treated as a stable setting changed only at deliberate review
+  points.
+- Accidental EL drift would be confusing or hard to undo.
+
+#### Option B — EL change only via `/factroll-status`
+
+`set_experience_level` is removed from the in-session `next_actions`
+set. EL can only be changed by the user explicitly invoking the
+`/factroll-status` prompt, which presents a deliberate review-and-
+adjust interface.
+
+**Pros**
+- Intentional change only: the user has to mean it, reducing accidental
+  EL drift.
+- Simpler session vocabulary; the in-session `next_actions` set is
+  shorter.
+- Clear UX boundary: session = content flow; status = profile
+  management.
+
+**Cons**
+- Not discoverable mid-session: if the user realizes facts are too easy
+  in fact 3, they must break flow, invoke `/factroll-status`, change
+  EL, and then resume — or just tolerate the wrong level for the rest
+  of the session.
+- The agent cannot proactively help the user calibrate.
+- Adds friction to what may be a frequent operation for new users still
+  finding their level.
+
+**Matches better when**
+- EL is meant to be stable across sessions; users are expected to set
+  it once and revisit deliberately.
+- Session flow should never be interrupted by housekeeping actions.
+
+**Matches worse when**
+- New users are still discovering their level and need to adjust
+  frequently mid-session.
+- Agent-driven calibration (agent notices difficulty signals and
+  suggests EL adjustment) is a desired feature.
+
+**Recommendation: Direct action (Option A)**, with one implementation
+note: include `set_experience_level` in `next_actions` only when the
+session context warrants it (e.g., after a fact is delivered, not after
+every single response), not as a permanent fixture in every response.
+This preserves discoverability and agent-driven calibration while
+minimising token bloat. Revisit and tighten the trigger condition in
+the backlog if users report unwanted EL-change suggestions.

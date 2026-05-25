@@ -239,7 +239,7 @@ and from their own session history.
   - `quiz_attempts` — session_id, fact_id, locked_answer, user_answer,
     verdict, created_at
 
-Migration tool: see open questions.
+Migration tool: Alembic.
 
 ## Auth
 
@@ -265,16 +265,17 @@ real case. v1 approach:
 
 ## Stack
 
-Open question on language (Python vs TypeScript); both have official
-MCP SDKs. Decision drivers: deployment story, type system preference,
-ecosystem fit for Postgres + OAuth libs.
+**Python.** MCP SDK (`mcp` package), FastAPI as the HTTP/SSE layer,
+SQLAlchemy as the ORM, Alembic for migrations, Pydantic for schemas.
+**Auth0** as the OAuth 2.1 provider (PKCE; third-party token flow for
+MCP remote transport).
 
-Initial choices to lock down in Milestone 0:
-- Language + MCP SDK
-- Web framework / HTTP layer
-- ORM / migration tool
-- Hosting target
-- OAuth provider
+Initial choices locked down in Milestone 0:
+- Language + MCP SDK: Python + `mcp`
+- Web framework / HTTP layer: FastAPI
+- ORM / migration tool: SQLAlchemy + Alembic
+- Hosting target: VPS (resolved)
+- OAuth provider: Auth0
 
 ## Roadmap
 
@@ -347,11 +348,15 @@ its own backend; it calls `factroll/core/` in-process.
 
 ## Open questions
 
-1. **Stack**: Python or TypeScript MCP SDK?
+1. ~~**Stack**: Python or TypeScript MCP SDK?~~ **Resolved: Python.**
+   FastAPI + SQLAlchemy + Alembic + Pydantic.
 2. ~~**Hosting**: Fly.io / Render / Cloud Run / VPS?~~ **Resolved: VPS.**
-3. **OAuth provider**: Auth0, Clerk, Supabase, or self-hosted (Hydra,
-   Keycloak)?
-4. **DB migration tool**: Alembic, Prisma, Sqitch, plain SQL?
+3. ~~**OAuth provider**: Auth0, Clerk, Supabase, or self-hosted (Hydra,
+   Keycloak)?~~ **Resolved: Auth0.** Best-fit for MCP's third-party
+   OAuth 2.1 + PKCE flow; migrate to self-hosted Hydra if MAU growth
+   makes pricing a concern.
+4. ~~**DB migration tool**: Alembic, Prisma, Sqitch, plain SQL?~~
+   **Resolved: Alembic** (Python stack, SQLAlchemy integration).
 5. ~~**Fact corpus seeding source**: export from past Claude
    conversations, manual curation, or both? Tooling needed?~~
    **Resolved: past Claude conversations. Tooling = parser →
@@ -360,14 +365,19 @@ its own backend; it calls `factroll/core/` in-process.
    we time out the locked answer (and how long), or honor it
    indefinitely until they reconnect?~~ **Resolved: hold indefinitely;
    no timeout.**
-7. **Per-surface vs unified session**: confirm `(user_id, surface_id)`
-   scoping vs a single active session per user.
+7. ~~**Per-surface vs unified session**: confirm `(user_id, surface_id)`
+   scoping vs a single active session per user.~~ **Resolved:
+   per-surface.** Sessions keyed `(user_id, surface_id)`; profile and
+   EL shared across surfaces.
 8. ~~**"Switch topic" mid-quiz**: hard-block, soft-confirm via tool
    output, or quietly close the quiz?~~ **Resolved: quietly close the
    quiz, then switch.**
-9. **Free-text Q&A handling**: tool returns an instruction to the
+9. ~~**Free-text Q&A handling**: tool returns an instruction to the
    agent to answer using its own ability (v1 plan), or proxy through a
-   server-side LLM for grounded QA (backlog)? When do we move?
+   server-side LLM for grounded QA (backlog)? When do we move?~~
+   **Resolved: agent instruction for v1.** Move to server-side LLM
+   when Q&A quality becomes a recurring complaint or a paid tier
+   covers the per-question cost.
 10. ~~**Anonymous trial**: any pre-OAuth demo (e.g. a single read-only
     topic) to lower onboarding friction, or is OAuth gate from day one
     fine?~~ **Resolved: anonymous trial allowed; OAuth/registration
@@ -385,9 +395,11 @@ its own backend; it calls `factroll/core/` in-process.
     or should we split / merge any actions (e.g. is
     `set_experience_level` distinct from a `start` param)?~~
     **Resolved: leave as-is for v1; revisit later.**
-14. **EL adjustment ergonomics**: keep `set_experience_level` as a
+14. ~~**EL adjustment ergonomics**: keep `set_experience_level` as a
     direct action, or only expose it via the `/factroll-status` prompt
-    and explicit user request?
+    and explicit user request?~~ **Resolved: direct action.**
+    Include in `next_actions` when session context warrants it (e.g.
+    after a fact is delivered), not on every response.
 
 ---
 

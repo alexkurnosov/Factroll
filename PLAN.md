@@ -382,7 +382,9 @@ its own backend; it calls `factroll/core/` in-process.
     topic) to lower onboarding friction, or is OAuth gate from day one
     fine?~~ **Resolved: anonymous trial allowed; OAuth/registration
     required to save state (EL, history, profile).**
-11. **Rate limits**: starting per-user request cap?
+11. ~~**Rate limits**: starting per-user request cap?~~ **Resolved:
+    10 req/min, flat for all users (authenticated and anonymous). No
+    daily cap for v1. Implementation: `slowapi` middleware in FastAPI.**
 12. ~~**Telemetry**: what to log, with what retention, under what
     privacy posture? GDPR-conscious defaults from day one.~~
     **Resolved: log topics picked, facts per topic, questions per
